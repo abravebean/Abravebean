@@ -68,6 +68,27 @@ python -m qqqbot.backtest --no-options                      # QQQ moves only, fa
 
 The backtest replays each past day through the same strategy code the live bot uses. It uses `contracts` and every other setting from `config.yaml`. For each trade, it finds the real option contract the bot would have bought and prices it from that option's 1-minute bars. It prints a summary (win rate, total and average P&L, profit factor, max drawdown, P&L by month) and saves every trade to `logs/backtest_trades.csv`.
 
+### Testing changes fairly
+
+```bash
+# 1. baseline, with realistic fill costs, split into two halves
+python -m qqqbot.backtest -q --slippage 0.03 --split 2025-07-01
+
+# 2. one change at a time (nothing is saved; config.yaml stays as it is)
+python -m qqqbot.backtest -q --slippage 0.03 --split 2025-07-01 --set band_exit=true
+python -m qqqbot.backtest -q --slippage 0.03 --split 2025-07-01 --set min_dte=5 max_dte=10
+python -m qqqbot.backtest -q --slippage 0.03 --split 2025-07-01 --set strike_offset=2
+```
+
+Judge each change on the **FROM 2025-07-01** block. A change is only worth keeping if it helps in both halves. If you like one, copy it into `config.yaml`, and the live bot uses it too.
+
+| setting | what it does |
+|---|---|
+| `band_exit: true` | Exits when the breakout fails: calls close if QQQ falls back below max(upper band, VWAP), puts if it rises back above min(lower band, VWAP). Checked every `band_exit_every_min` minutes. |
+| `strike_offset: 2` | Buys about $2 in the money instead of at the money. It costs more per contract, but less of the price is time value that decays. |
+| `min_dte` / `max_dte` | Chooses longer expiries (e.g. 5–10 days), which lose value more slowly during the day. |
+| `--slippage 0.03` | Makes every option buy 3¢ worse and every sell 3¢ worse, which is $6 per round trip per contract. |
+
 Limits:
 - Alpaca's option price history only starts in February 2024.
 - Historical bid/ask isn't available, so fills use the option's 1-minute close instead of the mid. Real fills will be a little worse.

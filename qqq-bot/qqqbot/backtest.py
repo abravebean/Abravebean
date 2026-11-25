@@ -26,12 +26,14 @@ from zoneinfo import ZoneInfo
 
 import pandas as pd
 
-from .config import Config, load_config
+from .config import Config, apply_overrides, load_config
 from .strategy import (
     ExitTracker,
+    band_stop_hit,
     build_day_setup,
     check_signal,
     regular_session,
+    target_strike,
 )
 
 ET = ZoneInfo("America/New_York")
@@ -105,10 +107,17 @@ def simulate_day(
     direction, entry_time, entry_px = entry
     tracker = ExitTracker(direction, entry_px, setup.atr, cfg.trail_activate_atr,
                           cfg.trail_giveback, cfg.stop_atr)
+    first = _at(d, cfg.first_check)
     reason, exit_time, exit_px = None, None, None
     for m in sorted(t for t in close_at if t > entry_time):
         px = close_at[m]
         reason = tracker.update(px)
+        if (reason is None and cfg.band_exit and m < force_exit
+                and int((m - first).total_seconds() // 60) % cfg.band_exit_every_min == 0):
+            chk = check_signal(setup, today[today.index <= m - timedelta(minutes=1)],
+                               noise_multiplier=cfg.noise_multiplier, atr_buffer=cfg.entry_atr_buffer)
+            if band_stop_hit(chk, direction):
+                reason = "band_vwap_stop"
         if reason is None and m >= force_exit:
             reason = "time_exit"
         if reason:
@@ -142,7 +151,7 @@ def price_at(bars: pd.DataFrame, minute_end: datetime, lookback_min: int = 10) -
     return float(window["close"].iloc[-1]) if not window.empty else math.nan
 
 
-def summarize(trades: list[SimTrade], days_tested: int, contracts: int) -> str:
+def summarize(trades: list[SimTrade], days_tested: int, contracts: int, months: bool = True) -> str:
     lines = [f"Days tested: {days_tested}   Trades: {len(trades)}"]
     if not trades:
         return "\n".join(lines)
@@ -170,6 +179,8 @@ def summarize(trades: list[SimTrade], days_tested: int, contracts: int) -> str:
     lines.append(f"  avg win ${wins.mean() if len(wins) else 0:,.0f}   avg loss ${losses.mean() if len(losses) else 0:,.0f}"
                  f"   profit factor {pf:.2f}")
     lines.append(f"  best ${p.max():,.0f}   worst ${p.min():,.0f}   max drawdown ${dd:,.0f}")
+    if not months:
+        return "\n".join(lines)
     by_month = opt.assign(month=pd.to_datetime(opt.day).dt.to_period("M")).groupby("month").pnl_dollars.sum()
     lines.append("")
     lines.append("By month:")
@@ -182,13 +193,14 @@ def summarize(trades: list[SimTrade], days_tested: int, contracts: int) -> str:
 # Data fetching (network)
 # --------------------------------------------------------------------------- #
 class Data:
-    def __init__(self, cfg: Config, cache_dir: Path):
+    def __init__(self, cfg: Config, cache_dir: Path, slippage: float = 0.0):
         from alpaca.data.historical import OptionHistoricalDataClient, StockHistoricalDataClient
         from alpaca.trading.client import TradingClient
 
         if not cfg.api_key or not cfg.secret_key:
             raise SystemExit("Set ALPACA_API_KEY and ALPACA_SECRET_KEY in .env first.")
         self.cfg = cfg
+        self.slippage = slippage
         self.stocks = StockHistoricalDataClient(cfg.api_key, cfg.secret_key)
         self.options = OptionHistoricalDataClient(cfg.api_key, cfg.secret_key)
         self.trading = TradingClient(cfg.api_key, cfg.secret_key, paper=cfg.paper)
@@ -251,9 +263,8 @@ class Data:
         """Find the contract the bot would have bought and price entry/exit."""
         expiries = [x for x in trading_days
                     if self.cfg.min_dte <= (x - t.day).days <= self.cfg.max_dte]
-        nearest = round(t.entry_underlying)
-        strikes = sorted({nearest, math.floor(t.entry_underlying), math.ceil(t.entry_underlying)},
-                         key=lambda s: abs(s - t.entry_underlying))
+        aim = target_strike(t.entry_underlying, t.direction, self.cfg.strike_offset)
+        strikes = sorted({math.floor(aim), math.ceil(aim)}, key=lambda s: abs(s - aim))
         for exp in expiries:          # soonest expiry first
             for k in strikes:         # closest strike first
                 sym = occ_symbol(self.cfg.symbol, exp, t.direction, k)
@@ -264,13 +275,16 @@ class Data:
                 exit_ = price_at(bars, t.exit_time)
                 if math.isnan(entry) or math.isnan(exit_):
                     continue
+                entry += self.slippage                   # pay up when buying
+                exit_ = max(0.0, exit_ - self.slippage)  # give up when selling
                 t.option_symbol, t.option_entry, t.option_exit = sym, entry, exit_
                 t.pnl_dollars = (exit_ - entry) * 100 * self.cfg.contracts
                 return
 
 
-def run(cfg: Config, start: date, end: date, with_options: bool, out: Path) -> list[SimTrade]:
-    data = Data(cfg, Path("data"))
+def run(cfg: Config, start: date, end: date, with_options: bool, out: Path,
+        slippage: float = 0.0, split: Optional[date] = None) -> list[SimTrade]:
+    data = Data(cfg, Path("data"), slippage)
     fetch_start = start - timedelta(days=45)  # warm-up for 20-day noise band + ATR
     cal = data.calendar(fetch_start, end + timedelta(days=7))
     trading_days = sorted(cal)
@@ -278,7 +292,7 @@ def run(cfg: Config, start: date, end: date, with_options: bool, out: Path) -> l
     by_day = {d: g for d, g in bars.groupby(bars.index.date)}
     have = sorted(by_day)
 
-    trades, tested = [], 0
+    trades, tested, tested_days = [], 0, []
     for d in [x for x in trading_days if start <= x <= end and x in by_day]:
         prior = [x for x in have if x < d][-(cfg.noise_lookback_days + 5):]
         if len(prior) < max(cfg.noise_lookback_days, cfg.atr_days + 1):
@@ -290,6 +304,7 @@ def run(cfg: Config, start: date, end: date, with_options: bool, out: Path) -> l
             log.warning("%s skipped: %s", d, e)
             continue
         tested += 1
+        tested_days.append(d)
         if t is None:
             continue
         if with_options:
@@ -303,7 +318,16 @@ def run(cfg: Config, start: date, end: date, with_options: bool, out: Path) -> l
     out.parent.mkdir(parents=True, exist_ok=True)
     pd.DataFrame([asdict(t) for t in trades]).to_csv(out, index=False)
     print()
+    if slippage:
+        print(f"Option fills include ${slippage:.2f}/share slippage each way "
+              f"(${slippage * 200 * cfg.contracts:.0f} per round trip).\n")
     print(summarize(trades, tested, cfg.contracts))
+    if split:
+        n_before = sum(1 for x in tested_days if x < split)
+        print(f"\n========== BEFORE {split} (period you may tune on) ==========")
+        print(summarize([t for t in trades if t.day < split], n_before, cfg.contracts, months=False))
+        print(f"\n========== FROM {split} (out-of-sample: judge changes here) ==========")
+        print(summarize([t for t in trades if t.day >= split], tested - n_before, cfg.contracts, months=False))
     print(f"\nEvery trade: {out}")
     return trades
 
@@ -315,10 +339,19 @@ def main() -> None:
     ap.add_argument("--end", type=date.fromisoformat, default=date.today() - timedelta(days=1))
     ap.add_argument("--no-options", action="store_true", help="QQQ moves only, skip option pricing")
     ap.add_argument("--out", default="logs/backtest_trades.csv")
+    ap.add_argument("--slippage", type=float, default=0.0,
+                    help="$ per share worse fill on each option buy and sell, e.g. 0.03")
+    ap.add_argument("--split", type=date.fromisoformat, default=None,
+                    help="also report before/after this date separately, e.g. 2025-07-01")
+    ap.add_argument("--set", nargs="*", default=[], metavar="KEY=VALUE",
+                    help="override config.yaml settings for this run, e.g. --set band_exit=true max_dte=7")
+    ap.add_argument("-q", "--quiet", action="store_true", help="don't print every trade")
     args = ap.parse_args()
-    logging.basicConfig(level=logging.INFO, format="%(message)s")
-    cfg = load_config(args.config)
-    run(cfg, args.start, args.end, not args.no_options, Path(args.out))
+    logging.basicConfig(level=logging.WARNING if args.quiet else logging.INFO, format="%(message)s")
+    cfg = apply_overrides(load_config(args.config), args.set)
+    if args.set:
+        print("Settings changed for this run:", ", ".join(args.set))
+    run(cfg, args.start, args.end, not args.no_options, Path(args.out), args.slippage, args.split)
 
 
 if __name__ == "__main__":

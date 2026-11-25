@@ -24,8 +24,12 @@ entry_atr_buffer: 0.3   # OR high + 0.3*ATR for calls, OR low - 0.3*ATR for puts
 trail_activate_atr: 4.0 # trailing exit arms once QQQ moved 4x ATR in your favour
 trail_giveback: 0.5     # ...then sell if it gives back half of the best move
 stop_atr: 10.0          # emergency stop: QQQ moved 10x ATR against you
+band_exit: false        # true = also exit when the close crosses back through
+                        #   max(upper band, VWAP) for calls / min(lower band, VWAP) for puts
+band_exit_every_min: 10 # how often that is checked (10 = on the :00/:10/:20... marks)
 
 # --- option & orders ---
+strike_offset: 0        # $ in the money. 0 = strike closest to price, 2 = ~$2 ITM
 min_dte: 1              # expiry 1 to 3 calendar days out, soonest one is used
 max_dte: 3
 entry_fill_timeout_sec: 60   # mid-price limit buy; cancelled if not filled in time

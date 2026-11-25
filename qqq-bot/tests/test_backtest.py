@@ -3,6 +3,7 @@ from datetime import date, datetime, time
 from zoneinfo import ZoneInfo
 
 import numpy as np
+import pytest
 
 from qqqbot.backtest import SimTrade, occ_symbol, price_at, simulate_day, summarize
 from qqqbot.config import Config
@@ -59,3 +60,37 @@ def test_summary_runs():
                  "X", 2.0, 3.0, 100.0)
     s = summarize([t, t], 10, 1)
     assert "Trades: 2" in s and "total $200" in s
+
+
+def test_band_exit_cuts_a_failed_breakout():
+    # breakout at 10:00, then QQQ falls back under VWAP/band by 10:30
+    closes = [500] * 15 + list(np.linspace(500, 515, 15)) + list(np.linspace(515, 505, 30)) + list(np.linspace(505, 496, 30)) + [496] * 300
+    hist, today = flat_history(wiggle=1.0), day_bars(D, closes, start_open=500)
+    held = simulate_day(hist, today, Config())
+    cut = simulate_day(hist, today, Config(band_exit=True))
+    assert held.exit_reason == "time_exit"
+    assert cut.exit_reason == "band_vwap_stop"
+    assert cut.exit_time.minute % 10 == 0 and cut.exit_time < at(11, 0)
+    assert cut.qqq_move > held.qqq_move
+
+
+def test_band_exit_keeps_a_winner():
+    closes = [500] * 15 + list(np.linspace(500, 515, 15)) + list(np.linspace(515, 530, 360))
+    t = simulate_day(flat_history(wiggle=0.5), day_bars(D, closes, start_open=500), Config(band_exit=True))
+    assert t.exit_reason == "time_exit"
+
+
+def test_target_strike_itm():
+    from qqqbot.strategy import target_strike
+    assert target_strike(500.4, "call", 2) == 498.4
+    assert target_strike(500.4, "put", 2) == 502.4
+    assert target_strike(500.4, "call", 0) == 500.4
+
+
+def test_overrides_parse_types():
+    from qqqbot.config import apply_overrides
+    c = apply_overrides(Config(), ["band_exit=true", "max_dte=7", "strike_offset=2.5", "force_exit=15:30"])
+    assert c.band_exit is True and c.max_dte == 7 and c.strike_offset == 2.5
+    assert c.force_exit == time(15, 30)
+    with pytest.raises(SystemExit):
+        apply_overrides(Config(), ["nope=1"])

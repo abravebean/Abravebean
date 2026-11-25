@@ -15,7 +15,7 @@ import pandas as pd
 
 from .broker import Broker
 from .config import Config, load_config
-from .strategy import DaySetup, ExitTracker, build_day_setup, check_signal, regular_session
+from .strategy import DaySetup, ExitTracker, band_stop_hit, build_day_setup, check_signal, regular_session
 from .tradelog import TradeLog
 
 ET = ZoneInfo("America/New_York")
@@ -71,11 +71,12 @@ def sleep_until(target: datetime) -> None:
         _time.sleep(min(left, 60))
 
 
-def is_check_minute(cfg: Config, minute_end: datetime, last_check: datetime) -> bool:
+def is_check_minute(cfg: Config, minute_end: datetime, last_check: datetime,
+                    every: Optional[int] = None) -> bool:
     first = at(minute_end.date(), cfg.first_check)
     if not (first <= minute_end <= last_check):
         return False
-    return int((minute_end - first).total_seconds() // 60) % cfg.check_every_min == 0
+    return int((minute_end - first).total_seconds() // 60) % (every or cfg.check_every_min) == 0
 
 
 class Bot:
@@ -174,6 +175,12 @@ class Bot:
             close = float(bars["close"].iloc[-1])
             reason = tracker.update(close)
             state.position.best_move = tracker.best_move
+            if (reason is None and cfg.band_exit and minute_end < force_exit
+                    and is_check_minute(cfg, minute_end, force_exit, cfg.band_exit_every_min)):
+                chk = check_signal(setup, bars, noise_multiplier=cfg.noise_multiplier,
+                                   atr_buffer=cfg.entry_atr_buffer)
+                if band_stop_hit(chk, state.position.direction):
+                    reason = "band_vwap_stop"
             if reason is None and minute_end >= force_exit:
                 reason = "time_exit"
             if reason:

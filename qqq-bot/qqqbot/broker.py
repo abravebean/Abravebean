@@ -24,6 +24,7 @@ from alpaca.trading.requests import (
 )
 
 from .config import Config
+from .strategy import target_strike
 
 ET = ZoneInfo("America/New_York")
 log = logging.getLogger(__name__)
@@ -98,15 +99,17 @@ class Broker:
 
     # --------------------------------------------------------------- options
     def pick_option(self, direction: str, price: float, today: date):
-        """Strike closest to `price`, soonest expiry between min_dte and max_dte days out."""
+        """Strike closest to `price` (shifted ITM by strike_offset), soonest expiry
+        between min_dte and max_dte days out."""
+        aim = target_strike(price, direction, self.cfg.strike_offset)
         req = GetOptionContractsRequest(
             underlying_symbols=[self.cfg.symbol],
             status=AssetStatus.ACTIVE,
             type=ContractType.CALL if direction == "call" else ContractType.PUT,
             expiration_date_gte=today + timedelta(days=self.cfg.min_dte),
             expiration_date_lte=today + timedelta(days=self.cfg.max_dte),
-            strike_price_gte=str(round(price * 0.97, 2)),
-            strike_price_lte=str(round(price * 1.03, 2)),
+            strike_price_gte=str(round(aim * 0.97, 2)),
+            strike_price_lte=str(round(aim * 1.03, 2)),
             limit=1000,
         )
         contracts = [c for c in self.trading.get_option_contracts(req).option_contracts if c.tradable]
@@ -114,7 +117,7 @@ class Broker:
             return None
         soonest = min(c.expiration_date for c in contracts)
         same_exp = [c for c in contracts if c.expiration_date == soonest]
-        return min(same_exp, key=lambda c: abs(float(c.strike_price) - price))
+        return min(same_exp, key=lambda c: abs(float(c.strike_price) - aim))
 
     def option_quote(self, symbol: str) -> tuple[float, float]:
         q = self.options.get_option_latest_quote(OptionLatestQuoteRequest(symbol_or_symbols=symbol))[symbol]

@@ -265,3 +265,19 @@ class ExitTracker:
         ):
             return "trailing_giveback"
         return None
+
+
+def band_stop_hit(chk: SignalCheck, direction: str) -> bool:
+    """Optional exit: the entry conditions have reversed.
+
+    Calls exit when the close falls back below max(upper band, VWAP);
+    puts exit when it rises back above min(lower band, VWAP).
+    """
+    if direction == "call":
+        return chk.close < max(chk.upper, chk.vwap)
+    return chk.close > min(chk.lower, chk.vwap)
+
+
+def target_strike(price: float, direction: str, strike_offset: float = 0.0) -> float:
+    """Strike to aim for. strike_offset > 0 moves that many dollars in the money."""
+    return price - strike_offset if direction == "call" else price + strike_offset
