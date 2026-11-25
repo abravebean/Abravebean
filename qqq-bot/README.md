@@ -58,6 +58,21 @@ To trade real money, set `paper: false` and use your live keys. Only do this aft
 - **Fills:** if the mid-price buy hasn't filled after 60 seconds, the bot cancels it and tries again at the next check. A mid-price sell gets 30 seconds, then the bot sends a market order for whatever is left, so it always exits.
 - This is not financial advice. Options can go to zero quickly. Paper-trade first.
 
+## Backtest (check it against past days)
+
+```bash
+python -m qqqbot.backtest                                   # Mar 2024 -> yesterday
+python -m qqqbot.backtest --start 2025-01-01 --end 2025-10-31
+python -m qqqbot.backtest --no-options                      # QQQ moves only, faster
+```
+
+The backtest replays each past day through the same strategy code the live bot uses. It uses `contracts` and every other setting from `config.yaml`. For each trade, it finds the real option contract the bot would have bought and prices it from that option's 1-minute bars. It prints a summary (win rate, total and average P&L, profit factor, max drawdown, P&L by month) and saves every trade to `logs/backtest_trades.csv`.
+
+Limits:
+- Alpaca's option price history only starts in February 2024.
+- Historical bid/ask isn't available, so fills use the option's 1-minute close instead of the mid. Real fills will be a little worse.
+- The first run downloads QQQ minute data (a minute or two) and caches it in `data/`.
+
 ## Tests
 
 ```bash
