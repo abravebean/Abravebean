@@ -1,0 +1,36 @@
+# Copy to config.yaml and edit. All times are US/Eastern.
+
+contracts: 1            # how many option contracts to buy per trade
+
+paper: true             # true = Alpaca paper account (fake money). false = REAL MONEY.
+dry_run: false          # true = never send orders; log what it would have done
+symbol: QQQ
+live_feed: iex          # iex = free data. sip = paid, full-market volume (better VWAP)
+
+# --- timing ---
+opening_range_end: "09:45"
+first_check: "10:00"
+last_check: "14:00"
+check_every_min: 10
+force_exit: "15:45"     # moved earlier automatically on half days
+
+# --- entry ---
+noise_lookback_days: 20
+noise_multiplier: 1.25
+atr_days: 5
+entry_atr_buffer: 0.3   # OR high + 0.3*ATR for calls, OR low - 0.3*ATR for puts
+
+# --- exits (measured on QQQ's 1-minute close, not the option price) ---
+trail_activate_atr: 4.0 # trailing exit arms once QQQ moved 4x ATR in your favour
+trail_giveback: 0.5     # ...then sell if it gives back half of the best move
+stop_atr: 10.0          # emergency stop: QQQ moved 10x ATR against you
+
+# --- option & orders ---
+min_dte: 1              # expiry 1 to 3 calendar days out, soonest one is used
+max_dte: 3
+entry_fill_timeout_sec: 60   # mid-price limit buy; cancelled if not filled in time
+exit_fill_timeout_sec: 30    # mid-price limit sell; then a market order for the rest
+retry_unfilled_entry: true   # if the buy doesn't fill, try again at the next 10-min check
+
+log_file: logs/trades.csv
+state_file: state.json
