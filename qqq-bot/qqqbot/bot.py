@@ -273,6 +273,27 @@ class Bot:
         state.position = None
 
 
+def acquire_single_instance_lock(state_file: str):
+    """Refuse to start if another copy of the bot already uses this state file.
+
+    The OS releases the lock automatically when the process exits, even on a crash.
+    Keep the returned handle alive for the life of the process.
+    """
+    import fcntl
+
+    lock_path = Path(state_file).with_suffix(".lock")
+    handle = open(lock_path, "w")
+    try:
+        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        handle.close()
+        raise SystemExit(
+            "Another copy of the bot is already running (check your other terminal tabs). "
+            "Stop it with Ctrl+C before starting a new one."
+        )
+    return handle
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="QQQ opening-range options bot")
     ap.add_argument("--config", default="config.yaml")
@@ -284,6 +305,7 @@ def main() -> None:
         cfg.dry_run = True
     if not cfg.paper and not cfg.dry_run:
         log.warning("paper: false -> this will trade REAL MONEY")
+    _lock = acquire_single_instance_lock(cfg.state_file)  # noqa: F841 (held until exit)
     Bot(cfg).run_forever()
 
 

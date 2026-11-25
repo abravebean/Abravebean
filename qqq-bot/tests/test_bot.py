@@ -126,3 +126,21 @@ def test_state_roundtrip(tmp_path):
     assert s.traded and s.position.best_move == 3.0
     s2 = State.load(p, TODAY + timedelta(days=1))  # new day: traded resets, position kept
     assert not s2.traded and s2.position is not None
+
+
+def test_second_bot_refuses_to_start(tmp_path):
+    import subprocess, sys, textwrap
+    import pytest
+    from qqqbot.bot import acquire_single_instance_lock
+    state = str(tmp_path / "state.json")
+    held = acquire_single_instance_lock(state)
+    # a separate process (like a second terminal tab) must be refused
+    code = textwrap.dedent(f"""
+        from qqqbot.bot import acquire_single_instance_lock
+        acquire_single_instance_lock({state!r})
+    """)
+    r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
+    assert r.returncode != 0 and "already running" in r.stderr
+    held.close()  # first bot exits -> a new one may start
+    r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
+    assert r.returncode == 0
