@@ -192,6 +192,23 @@ def summarize(trades: list[SimTrade], days_tested: int, contracts: int, months: 
 # --------------------------------------------------------------------------- #
 # Data fetching (network)
 # --------------------------------------------------------------------------- #
+def with_retry(fn, *args, attempts: int = 5, **kwargs):
+    """Call fn, retrying network hiccups (timeouts, dropped connections) with backoff."""
+    import time as _time
+
+    import requests
+
+    for i in range(attempts):
+        try:
+            return fn(*args, **kwargs)
+        except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
+            if i == attempts - 1:
+                raise
+            wait = 5 * 2 ** i
+            log.warning("network problem (%s); retrying in %ds", type(e).__name__, wait)
+            _time.sleep(wait)
+
+
 class Data:
     def __init__(self, cfg: Config, cache_dir: Path, slippage: float = 0.0):
         from alpaca.data.historical import OptionHistoricalDataClient, StockHistoricalDataClient
@@ -210,10 +227,16 @@ class Data:
     def calendar(self, start: date, end: date) -> dict[date, datetime]:
         from alpaca.trading.requests import GetCalendarRequest
 
+        path = self.cache_dir / f"calendar_{start}_{end}.csv"
+        if path.exists():
+            df = pd.read_csv(path)
+            return {date.fromisoformat(d): datetime.fromisoformat(c) for d, c in zip(df.date, df.close)}
         out = {}
-        for c in self.trading.get_calendar(GetCalendarRequest(start=start, end=end)):
+        for c in with_retry(self.trading.get_calendar, GetCalendarRequest(start=start, end=end)):
             cl = c.close if c.close.tzinfo else c.close.replace(tzinfo=ET)
             out[c.date] = cl.astimezone(ET)
+        pd.DataFrame({"date": [d.isoformat() for d in out],
+                      "close": [c.isoformat() for c in out.values()]}).to_csv(path, index=False)
         return out
 
     def qqq_minutes(self, start: date, end: date) -> pd.DataFrame:
@@ -232,7 +255,7 @@ class Data:
             start=_at(start, time(0, 0)), end=_at(end + timedelta(days=1), time(0, 0)),
             feed=DataFeed.SIP,
         )
-        df = self.stocks.get_stock_bars(req).df
+        df = with_retry(self.stocks.get_stock_bars, req).df
         if isinstance(df.index, pd.MultiIndex):
             df = df.xs(self.cfg.symbol, level="symbol")
         df.index = pd.to_datetime(df.index).tz_convert(ET)
@@ -244,10 +267,14 @@ class Data:
         from alpaca.data.requests import OptionBarsRequest
         from alpaca.data.timeframe import TimeFrame
 
+        import requests
+
         try:
-            res = self.options.get_option_bars(OptionBarsRequest(
+            res = with_retry(self.options.get_option_bars, OptionBarsRequest(
                 symbol_or_symbols=symbol, timeframe=TimeFrame.Minute,
                 start=_at(d, time(9, 30)), end=_at(d, time(16, 0))))
+        except (requests.exceptions.ConnectionError, requests.exceptions.Timeout):
+            raise  # still offline after retries: stop rather than silently skip trades
         except Exception as e:  # unknown symbol etc.
             log.debug("option bars %s failed: %s", symbol, e)
             return pd.DataFrame()

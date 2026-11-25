@@ -94,3 +94,33 @@ def test_overrides_parse_types():
     assert c.force_exit == time(15, 30)
     with pytest.raises(SystemExit):
         apply_overrides(Config(), ["nope=1"])
+
+
+def test_with_retry_recovers_from_timeouts(monkeypatch):
+    import requests
+    import time as _time
+    from qqqbot.backtest import with_retry
+    monkeypatch.setattr(_time, "sleep", lambda s: None)
+    calls = []
+
+    def flaky():
+        calls.append(1)
+        if len(calls) < 3:
+            raise requests.exceptions.ConnectionError("timed out")
+        return "ok"
+
+    assert with_retry(flaky) == "ok" and len(calls) == 3
+
+
+def test_calendar_cache_roundtrip(tmp_path):
+    from pathlib import Path
+    from types import SimpleNamespace
+    from qqqbot.backtest import Data
+    d = object.__new__(Data)
+    d.cache_dir = Path(tmp_path)
+    close = datetime(2026, 11, 27, 13, 0, tzinfo=ET)
+    d.trading = SimpleNamespace(get_calendar=lambda req: [SimpleNamespace(date=date(2026, 11, 27), close=close)])
+    first = d.calendar(date(2026, 11, 1), date(2026, 11, 30))
+    d.trading = None  # second call must come from the cache
+    second = d.calendar(date(2026, 11, 1), date(2026, 11, 30))
+    assert first == second == {date(2026, 11, 27): close}
