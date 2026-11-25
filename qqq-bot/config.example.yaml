@@ -30,8 +30,9 @@ band_exit_every_min: 10 # how often that is checked (10 = on the :00/:10/:20... 
 
 # --- option & orders ---
 strike_offset: 0        # $ in the money. 0 = strike closest to price, 2 = ~$2 ITM
-min_dte: 1              # expiry 1 to 3 calendar days out, soonest one is used
-max_dte: 3
+min_dte: 5              # expiry 5 to 10 calendar days out, soonest one is used
+                        #   (backtest: beat 1-3 days in both halves, less time decay)
+max_dte: 10
 entry_fill_timeout_sec: 60   # mid-price limit buy; cancelled if not filled in time
 exit_fill_timeout_sec: 30    # mid-price limit sell; then a market order for the rest
 retry_unfilled_entry: true   # if the buy doesn't fill, try again at the next 10-min check

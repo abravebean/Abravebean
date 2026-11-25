@@ -10,7 +10,7 @@ A Python bot that trades QQQ calls and puts on Alpaca using these rules:
 4. **When it checks:** never before 10:00. From 10:00 to 14:00 it checks every 10 minutes, using the 1-minute close.
 5. **Calls:** buys calls if the close is above all three of: the opening-range high + 0.3×ATR, the upper band, and VWAP.
 6. **Puts:** buys puts if the close is below all three of: the opening-range low − 0.3×ATR, the lower band, and VWAP.
-7. **One trade a day:** buys the strike closest to the current price with the soonest expiry 1–3 days out. The order is a limit order at the mid price.
+7. **One trade a day:** buys the strike closest to the current price with the soonest expiry 5–10 days out (originally 1–3; changed after backtesting). The order is a limit order at the mid price.
 8. **Exits:** all judged on QQQ's 1-minute closes, not the option price.
    - **(a) Trailing exit:** once QQQ has moved 4×ATR in your favour, sell if it gives back half of its best move.
    - **(b) Emergency stop:** sell if QQQ moves 10×ATR against you.

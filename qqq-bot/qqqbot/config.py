@@ -52,8 +52,8 @@ class Config:
 
     # --- option selection / orders ----------------------------------------
     strike_offset: float = 0.0      # $ in the money (0 = closest strike to price)
-    min_dte: int = 1
-    max_dte: int = 3
+    min_dte: int = 5
+    max_dte: int = 10
     entry_fill_timeout_sec: int = 60
     exit_fill_timeout_sec: int = 30
     retry_unfilled_entry: bool = True
