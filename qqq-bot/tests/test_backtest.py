@@ -124,3 +124,29 @@ def test_calendar_cache_roundtrip(tmp_path):
     d.trading = None  # second call must come from the cache
     second = d.calendar(date(2026, 11, 1), date(2026, 11, 30))
     assert first == second == {date(2026, 11, 27): close}
+
+
+def test_apply_capital_skips_unaffordable_and_tracks_cash():
+    from qqqbot.backtest import apply_capital
+
+    def tr(entry, exit_):
+        return SimTrade(D, "call", at(10, 0), 500, at(15, 45), 501, "time_exit", 1, 1, 3, 501, 499,
+                        "X", entry, exit_, (exit_ - entry) * 100)
+
+    trades = [tr(5.0, 6.0),    # costs $500, have $600 -> take, +$100 -> $700
+              tr(8.0, 9.0),    # costs $800 > $700 -> skip
+              tr(7.0, 4.0),    # costs $700 -> take, -$300 -> $400
+              tr(5.0, 5.5)]    # costs $500 > $400 -> skip
+    lines = apply_capital(trades, 600, contracts=1)
+    assert [t.qty for t in trades] == [1, 0, 1, 0]
+    assert trades[2].cash_after == 400
+    assert math.isnan(trades[1].pnl_dollars)
+    assert "ending cash $400" in lines[0] and "skipped" in lines[1] and ": 2" in lines[1]
+
+
+def test_apply_capital_caps_contracts_by_cash():
+    from qqqbot.backtest import apply_capital
+    t = SimTrade(D, "call", at(10, 0), 500, at(15, 45), 501, "time_exit", 1, 1, 3, 501, 499,
+                 "X", 2.0, 3.0, 100.0)
+    apply_capital([t], 500, contracts=5)  # can afford 2 at $200
+    assert t.qty == 2 and t.pnl_dollars == 200

@@ -61,6 +61,8 @@ class SimTrade:
     option_entry: float = math.nan
     option_exit: float = math.nan
     pnl_dollars: float = math.nan
+    qty: int = 0                  # contracts actually bought (0 = skipped / unpriced)
+    cash_after: float = math.nan  # account balance after this trade (--capital runs)
 
 
 def _at(d: date, t: time) -> datetime:
@@ -174,7 +176,7 @@ def summarize(trades: list[SimTrade], days_tested: int, contracts: int, months: 
     dd = (equity - equity.cummax()).min()
     wins, losses = p[p > 0], p[p <= 0]
     pf = wins.sum() / -losses.sum() if losses.sum() < 0 else math.inf
-    lines.append(f"Options P&L ({contracts} contract(s) per trade, {len(opt)} trades priced):")
+    lines.append(f"Options P&L (up to {contracts} contract(s) per trade, {len(opt)} trades taken):")
     lines.append(f"  total ${p.sum():,.0f}   avg ${p.mean():,.0f}/trade   win rate {100 * (p > 0).mean():.1f}%")
     lines.append(f"  avg win ${wins.mean() if len(wins) else 0:,.0f}   avg loss ${losses.mean() if len(losses) else 0:,.0f}"
                  f"   profit factor {pf:.2f}")
@@ -187,6 +189,42 @@ def summarize(trades: list[SimTrade], days_tested: int, contracts: int, months: 
     for m, v in by_month.items():
         lines.append(f"  {m}  ${v:>10,.0f}")
     return "\n".join(lines)
+
+
+def apply_capital(trades: list[SimTrade], capital: float, contracts: int) -> list[str]:
+    """Replay trades against a cash balance.
+
+    Each trade buys up to `contracts`, but only as many as the cash can pay for
+    (premium = option price x 100). Unaffordable trades are skipped.
+    Rewrites qty / pnl_dollars / cash_after on each trade; returns report lines.
+    """
+    cash = capital
+    taken = skipped = 0
+    for t in trades:
+        if math.isnan(t.option_entry) or math.isnan(t.option_exit):
+            t.qty, t.pnl_dollars, t.cash_after = 0, math.nan, cash
+            continue
+        cost = t.option_entry * 100
+        qty = min(contracts, int(cash // cost)) if cost > 0 else 0
+        if qty == 0:
+            skipped += 1
+            t.qty, t.pnl_dollars, t.cash_after = 0, math.nan, cash
+            continue
+        taken += 1
+        t.qty = qty
+        t.pnl_dollars = (t.option_exit - t.option_entry) * 100 * qty
+        cash += t.pnl_dollars
+        t.cash_after = cash
+    costs = [t.option_entry * 100 for t in trades if not math.isnan(t.option_entry)]
+    lines = [
+        f"Starting cash ${capital:,.0f} -> ending cash ${cash:,.0f}  "
+        f"({cash - capital:+,.0f}, {100 * (cash / capital - 1):+.1f}%)",
+        f"Trades taken: {taken}   skipped (1 contract cost more than the cash on hand): {skipped}",
+    ]
+    if costs:
+        lines.append(f"1 contract cost: min ${min(costs):,.0f}  median ${sorted(costs)[len(costs) // 2]:,.0f}"
+                     f"  max ${max(costs):,.0f}")
+    return lines
 
 
 # --------------------------------------------------------------------------- #
@@ -310,7 +348,8 @@ class Data:
 
 
 def run(cfg: Config, start: date, end: date, with_options: bool, out: Path,
-        slippage: float = 0.0, split: Optional[date] = None) -> list[SimTrade]:
+        slippage: float = 0.0, split: Optional[date] = None,
+        capital: Optional[float] = None) -> list[SimTrade]:
     data = Data(cfg, Path("data"), slippage)
     fetch_start = start - timedelta(days=45)  # warm-up for 20-day noise band + ATR
     cal = data.calendar(fetch_start, end + timedelta(days=7))
@@ -342,12 +381,22 @@ def run(cfg: Config, start: date, end: date, with_options: bool, out: Path,
                  f"{t.exit_time:%H:%M}", t.exit_underlying, t.exit_reason, t.qqq_move,
                  "n/a" if math.isnan(t.pnl_dollars) else f"${t.pnl_dollars:+,.0f}")
 
+    capital_lines = []
+    if capital is not None:
+        capital_lines = apply_capital(trades, capital, cfg.contracts)
+    else:
+        for t in trades:
+            if not math.isnan(t.pnl_dollars):
+                t.qty = cfg.contracts
+
     out.parent.mkdir(parents=True, exist_ok=True)
     pd.DataFrame([asdict(t) for t in trades]).to_csv(out, index=False)
     print()
     if slippage:
         print(f"Option fills include ${slippage:.2f}/share slippage each way "
               f"(${slippage * 200 * cfg.contracts:.0f} per round trip).\n")
+    if capital_lines:
+        print("\n".join(capital_lines) + "\n")
     print(summarize(trades, tested, cfg.contracts))
     if split:
         n_before = sum(1 for x in tested_days if x < split)
@@ -372,13 +421,16 @@ def main() -> None:
                     help="also report before/after this date separately, e.g. 2025-07-01")
     ap.add_argument("--set", nargs="*", default=[], metavar="KEY=VALUE",
                     help="override config.yaml settings for this run, e.g. --set band_exit=true max_dte=7")
+    ap.add_argument("--capital", type=float, default=None,
+                    help="starting cash, e.g. 600: skip trades you couldn't afford, track the balance")
     ap.add_argument("-q", "--quiet", action="store_true", help="don't print every trade")
     args = ap.parse_args()
     logging.basicConfig(level=logging.WARNING if args.quiet else logging.INFO, format="%(message)s")
     cfg = apply_overrides(load_config(args.config), args.set)
     if args.set:
         print("Settings changed for this run:", ", ".join(args.set))
-    run(cfg, args.start, args.end, not args.no_options, Path(args.out), args.slippage, args.split)
+    run(cfg, args.start, args.end, not args.no_options, Path(args.out), args.slippage, args.split,
+        args.capital)
 
 
 if __name__ == "__main__":
